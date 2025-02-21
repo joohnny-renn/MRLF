@@ -1,0 +1,869 @@
+# 导入
+# 灰色的导入最好别删除
+import time
+import shutil
+import numpy as np
+import pandas as pd
+import category_encoders as ce
+import matplotlib.pyplot as plt
+
+from d2lzh_pytorch import *
+from sklearn.utils import shuffle
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split as tts
+from torch import nn
+from PIL import Image
+from torch.utils import data
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from xgboost import XGBClassifier as xgbc
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics import PrecisionRecallDisplay
+from sklearn.metrics import precision_recall_curve, f1_score
+from sklearn.manifold import TSNE
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
+from sklearn.preprocessing import StandardScaler
+from matplotlib.colors import Normalize
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+sys.path.append("..")
+
+# 数据集
+# 想调用测试数据集只需要更改路径中的数据集名称一处即可
+# 换数据集时，如果不新生成图集使用旧图集，需要换划分队列名
+# 重要性计算参数
+global_name = "diamonds"
+# global_root = r'D:\mrlf\dataset'
+global_root = r'D:\ryqcode\mrlf\dataset'
+# 计算重要性时的判断依据,有类别特征选择cover，只有数值特征选择weight
+importance_type = 'weight'
+# 计算重要性时的决策树数量
+n_estimators = 200
+batch_size = 32
+num_epochs = 100
+# 0.001-0.0001之间
+lr = 0.0005
+# 特征数量，图像通道数，卷积核数量，分类数量
+global_input_size = 9
+global_input_channels = 4
+# 一般定义为2的次幂，特征数量的2/3左右
+global_hidden_size = 64
+global_num_classes = 5
+
+
+# 对数据进行准备和处理的类
+class DataPrepare:
+
+    # self.df 数据集的df，当前对象的一个DataFrame类型（二维表格或异构数据）数据
+    # self.df 按列索引
+    # self.data_root 数据集根目录
+    # self.data_name 数据集名
+    # self.x_cols 特征列
+    # self.y_col  标签列
+    # self.numerical_df 保留原始信息的数值编码
+    # self.import_list [特征重要性]
+    # self.import_combine [特征名称,重要性]的二维列表
+    # self.import_dict {'特征名称'：'重要性'}的字典
+    def __init__(self, data_name, data_root):
+        self.df = []
+        self.numerical_df = []
+        self.data_root = data_root
+        self.data_name = data_name
+        self.continuous_features = []
+        self.discrete_features = []
+        self.all_features = []
+        self.x_cols = []
+        self.y_col = []
+        self.import_list = []
+        self.import_combine = []
+        self.import_dict = {}
+
+    # 定义列名
+    def column_names(self):
+        if self.data_name == 'vehicle':
+            self.continuous_features = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                                        'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18']
+            self.discrete_features = []
+            self.all_features = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                                 'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'type']
+            self.x_cols = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                           'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18']
+            self.y_col = 'type'
+        elif self.data_name == 'splice':
+            self.continuous_features = []
+            self.discrete_features = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                                      'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19',
+                                      'f20', 'f21', 'f22', 'f23', 'f24', 'f25', 'f26', 'f27', 'f28',
+                                      'f29', 'f30', 'f31', 'f32', 'f33', 'f34', 'f35', 'f36', 'f37',
+                                      'f38', 'f39', 'f40', 'f41', 'f42', 'f43', 'f44', 'f45', 'f46',
+                                      'f47', 'f48', 'f49', 'f50', 'f51', 'f52', 'f53', 'f54', 'f55',
+                                      'f56', 'f57', 'f58', 'f59', 'f60', 'f61']
+            self.all_features = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                                 'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19',
+                                 'f20', 'f21', 'f22', 'f23', 'f24', 'f25', 'f26', 'f27', 'f28',
+                                 'f29', 'f30', 'f31', 'f32', 'f33', 'f34', 'f35', 'f36', 'f37',
+                                 'f38', 'f39', 'f40', 'f41', 'f42', 'f43', 'f44', 'f45', 'f46',
+                                 'f47', 'f48', 'f49', 'f50', 'f51', 'f52', 'f53', 'f54', 'f55',
+                                 'f56', 'f57', 'f58', 'f59', 'f60', 'f61', 'type']
+            self.x_cols = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
+                           'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19',
+                           'f20', 'f21', 'f22', 'f23', 'f24', 'f25', 'f26', 'f27', 'f28',
+                           'f29', 'f30', 'f31', 'f32', 'f33', 'f34', 'f35', 'f36', 'f37',
+                           'f38', 'f39', 'f40', 'f41', 'f42', 'f43', 'f44', 'f45', 'f46',
+                           'f47', 'f48', 'f49', 'f50', 'f51', 'f52', 'f53', 'f54', 'f55',
+                           'f56', 'f57', 'f58', 'f59', 'f60', 'f61'
+                           ]
+            self.y_col = 'type'
+        elif self.data_name == 'helo':
+            self.all_features = ['RiskPerformance', 'ExternalRiskEstimate', 'MSinceOldestTradeOpen',
+                                 'MSinceMostRecentTradeOpen', 'AverageMInFile', 'NumSatisfactoryTrades',
+                                 'NumTrades60Ever2DerogPubRec', 'NumTrades90Ever2DerogPubRec', 'PercentTradesNeverDelq',
+                                 'MSinceMostRecentDelq', 'MaxDelq2PublicRecLast12M', 'MaxDelqEver', 'NumTotalTrades',
+                                 'NumTradesOpeninLast12M', 'PercentInstallTrades', 'MSinceMostRecentInqexcl7days',
+                                 'NumInqLast6M', 'NumInqLast6Mexcl7days', 'NetFractionRevolvingBurden',
+                                 'NetFractionInstallBurden', 'NumRevolvingTradesWBalance', 'NumInstallTradesWBalance',
+                                 'NumBank2NatlTradesWHighUtilization', 'PercentTradesWBalance'
+                                 ]
+            self.continuous_features = ['ExternalRiskEstimate', 'MSinceOldestTradeOpen',
+                                        'MSinceMostRecentTradeOpen', 'AverageMInFile', 'NumSatisfactoryTrades',
+                                        'NumTrades60Ever2DerogPubRec', 'NumTrades90Ever2DerogPubRec',
+                                        'PercentTradesNeverDelq',
+                                        'MSinceMostRecentDelq', 'MaxDelq2PublicRecLast12M', 'MaxDelqEver',
+                                        'NumTotalTrades',
+                                        'NumTradesOpeninLast12M', 'PercentInstallTrades',
+                                        'MSinceMostRecentInqexcl7days',
+                                        'NumInqLast6M', 'NumInqLast6Mexcl7days', 'NetFractionRevolvingBurden',
+                                        'NetFractionInstallBurden', 'NumRevolvingTradesWBalance',
+                                        'NumInstallTradesWBalance',
+                                        'NumBank2NatlTradesWHighUtilization', 'PercentTradesWBalance']
+            self.discrete_features = []
+            self.x_cols = ['ExternalRiskEstimate', 'MSinceOldestTradeOpen',
+                           'MSinceMostRecentTradeOpen', 'AverageMInFile', 'NumSatisfactoryTrades',
+                           'NumTrades60Ever2DerogPubRec', 'NumTrades90Ever2DerogPubRec', 'PercentTradesNeverDelq',
+                           'MSinceMostRecentDelq', 'MaxDelq2PublicRecLast12M', 'MaxDelqEver', 'NumTotalTrades',
+                           'NumTradesOpeninLast12M', 'PercentInstallTrades', 'MSinceMostRecentInqexcl7days',
+                           'NumInqLast6M', 'NumInqLast6Mexcl7days', 'NetFractionRevolvingBurden',
+                           'NetFractionInstallBurden', 'NumRevolvingTradesWBalance', 'NumInstallTradesWBalance',
+                           'NumBank2NatlTradesWHighUtilization', 'PercentTradesWBalance']
+            self.y_col = 'RiskPerformance'
+        elif self.data_name == 'adult':
+            self.continuous_features = ['age', 'fnlwgt', 'education-num', 'capital-gain', 'capital-loss',
+                                        'hours-per-week']
+            self.discrete_features = ['workclass', 'education', 'marital-status', 'occupation', 'relationship', 'race',
+                                      'sex', 'native-country']
+            self.all_features = ['age', 'workclass', 'fnlwgt', 'education', 'education-num', 'marital-status',
+                                 'occupation', 'relationship', 'race', 'sex', 'capital-gain', 'capital-loss',
+                                 'hours-per-week', 'native-country', 'salary']
+            self.x_cols = ['age', 'workclass', 'fnlwgt', 'education', 'education-num', 'marital-status', 'occupation',
+                           'relationship', 'race', 'sex', 'capital-gain', 'capital-loss', 'hours-per-week',
+                           'native-country']
+            self.y_col = 'salary'
+        elif self.data_name == 'diamonds':
+            self.continuous_features = ['carat', 'depth', 'table', 'price', 'x', 'y', 'z']
+            self.discrete_features = ['color', 'clarity']
+            self.all_features = ['carat', 'cut', 'color', 'clarity', 'depth', 'table', 'price', 'x', 'y', 'z']
+            self.x_cols = ['carat', 'color', 'clarity', 'depth', 'table', 'price', 'x', 'y', 'z']
+            self.y_col = 'cut'
+
+    # 加载数据
+    def load_data(self):
+        if self.data_name == 'vehicle':
+            data_list = []
+            with open(self.data_root + r'\vehicle.data') as f:
+                line = f.readline()
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-1]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+        elif self.data_name == 'splice':
+            data_list = []
+            with open(self.data_root + r'\splice.data') as f:
+                line = f.readline()
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-1]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+        elif self.data_name == 'helo':
+            data_list = []
+            with open(self.data_root + r'\helo.data') as f:
+                line = f.readline()
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-2]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+        elif self.data_name == 'adult':
+            # 存储数据集的列表
+            data_list = []
+            with open(self.data_root + r'\adult.data') as f:
+                # 读取1数据行
+                line = f.readline()
+                # 遍历1行所有列
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-2]
+            # 注意这个数据集是两个文件
+            with open(self.data_root + r'\adult.test') as f:
+                line = f.readline()
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    line = line.replace(".", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-2]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+            # print("self.df 的类型:", type(self.df))
+        elif self.data_name == 'adultsample':
+            # 存储数据集的列表
+            data_list = []
+            with open(self.data_root + r'\adultsample.data') as f:
+                # 读取1数据行
+                line = f.readline()
+                # 遍历1行所有列
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-2]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+        elif self.data_name == 'diamonds':
+            data_list = []
+            with open(self.data_root + r'\diamonds.data') as f:
+                line = f.readline()
+                while line:
+                    line = line.replace("\n", "")
+                    line = line.replace(" ", "")
+                    params = line.split(",")
+                    data_list.append(params)
+                    line = f.readline()
+            data_list = data_list[:-2]
+            self.df = pd.DataFrame(data_list, columns=self.all_features)
+            self.df = shuffle(self.df)
+
+    # 数据预处理
+    # 数值编码
+    def preprocessing(self):
+        # 需要特征工程的数据集
+        # 解决出现adult数据集出现的age = |1x3Crossvalidator 空白行的补丁
+        # 这个强警告暂时无法解决
+        if self.data_name == 'adult':
+            value_to_remove = '|1x3Crossvalidator'
+            self.df = self.df[self.df['age'] != value_to_remove]
+        if self.data_name == 'adultsample':
+            value_to_remove = '|1x3Crossvalidator'
+            self.df = self.df[self.df['age'] != value_to_remove]
+        # 存储数值编码
+        # 因为第一步就有负数转化，所以从这里开始出现数值编码
+        self.numerical_df = self.df.copy()
+        # 遍历数值特征
+        for col in self.continuous_features:
+            self.df[col] = self.df[col].astype(float)
+            # 保留负数
+            self.numerical_df[col] = self.numerical_df[col].astype(float)
+            # 防止出现负数
+            self.df[col] = self.df[col].apply(lambda x: abs(x) if x < 0 else x)
+        # 遍历类别特征
+        for col in self.discrete_features:
+            self.df[col] = self.df[col].astype(str)
+            self.numerical_df[col] = self.numerical_df[col].astype(str)
+        # 标签列序数编码
+        le = LabelEncoder()
+        le.fit(np.hstack([self.df[self.y_col]]))
+        self.df[self.y_col] = le.transform(self.df[self.y_col])
+        self.numerical_df[self.y_col] = le.transform(self.numerical_df[self.y_col])
+        del le
+        # 定义CatBoostEncoder，使用模型编码将类别特征转化为数值特征
+        cbe_encoder = ce.cat_boost.CatBoostEncoder()
+        cbe_encoder.fit(self.df[self.discrete_features], self.df[self.y_col])
+        cbe_encoder.fit(self.numerical_df[self.discrete_features], self.numerical_df[self.y_col])
+        self.df[self.discrete_features] = cbe_encoder.transform(self.df[self.discrete_features])
+        # 保留所有原始信息的数值编码
+        self.numerical_df[self.discrete_features] = cbe_encoder.transform(self.numerical_df[self.discrete_features])
+        # 将所有特征值归一化
+        scaler = MinMaxScaler()
+        self.df[self.x_cols] = scaler.fit_transform(self.df[self.x_cols])
+        # scaler = MinMaxScaler(feature_range=(-1, 1))
+        self.numerical_df[self.x_cols] = scaler.fit_transform(self.numerical_df[self.x_cols])
+        # print("处理后前 50 行的值:\n", self.df.head(50))
+
+    # xgboost训练得特征重要值
+    def xgboost_train(self):
+        train_dataa, test_dataa = tts(self.df, test_size=0.1, random_state=420)
+        train_x = train_dataa[self.x_cols]
+        train_y = train_dataa[self.y_col]
+        test_x = test_dataa[self.x_cols]
+        test_y = test_dataa[self.y_col]
+        # 数值特征的用weight，类别特征的用cover
+        xgb_classifier = xgbc(importance_type=importance_type, n_estimators=n_estimators).fit(train_x, train_y)
+        self.import_list = xgb_classifier.feature_importances_.tolist()
+        score = xgb_classifier.score(test_x, test_y)
+        print(score)
+
+    # 组合x_cols和importance值
+    def combining(self):
+        import_combine = []
+        for i in range(len(self.import_list)):
+            import_combine.append([self.x_cols[i], self.import_list[i]])
+        # 列名+重要性
+        self.import_combine = import_combine
+        # 每个值索引对应它的重要性
+        for i in range(len(import_combine)):
+            self.import_dict[import_combine[i][0]] = import_combine[i][1]
+
+    # 取中间点的想法暂时无法实现，从前后和中间点的计算两个地方都有问题。故暂定为当前点到下一个点之间为当前特征的特征区域
+    # 图像编码
+    def image_encoding(self):
+        # 图集文件夹
+        # 改图集文件名，则还要改train_data
+        if os.path.exists("image"):
+            shutil.rmtree("image")
+        os.mkdir("image")
+        # 每张图片索引
+        photo_idx = 0
+        # 遍历数据帧的每一行
+        for _, row in self.df.iterrows():
+            # 列名与列数量
+            vars = self.x_cols
+            num_vars = len(vars)
+            # 0 到 2π 的等间距角度，每个特征自己的角度值
+            angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+            values = row[vars].values * 100 + 20  # 调整特征值
+            # 将特征值的第一个值添加到数组末尾，确保雷达图闭合
+            values = np.append(values, values[0])
+            # 将第一个角度添加到角度列表的末尾，以确保雷达图闭合
+            angles = np.append(angles, angles[0])
+            # 创建极坐标子图
+            fig, ax = plt.subplots(figsize=(3, 3), subplot_kw=dict(polar=True))
+            # 设置角度增长方向为逆时针
+            ax.set_theta_direction(-1)
+            # 绘制特征雷达图的轮廓线
+            ax.plot(angles, values, linewidth=1, linestyle='solid')
+            # 设置颜色映射范围
+            norm = Normalize(vmin=0, vmax=1)
+            # 遍历每个特征区域并填充颜色
+            for i in range(num_vars):
+                # 获取当前特征的重要性
+                importance = self.import_dict[vars[i]]
+                # 使用 Reds 颜色映射并根据重要性计算颜色
+                color_intensity = min(importance * 10, 1)  # 确保不超过最大值，使用特征重要性调整颜色强度
+                cmap = plt.cm.Reds  # 使用Reds颜色映射，viridis、plasma或inferno
+                color = cmap(norm(color_intensity))  # 使用 Normalize 进行颜色映射
+                # 填充前一个特征点与下一个特征点之间的区域
+                ax.fill([angles[i], angles[i+1], angles[i+1], angles[i]],  # 定义角度区域
+                        [values[i], values[i+1], 0, 0],  # 定义特征值区域
+                        color=color, alpha=1)  # 填充颜色，透明度
+            # 隐藏刻度
+            ax.set_xticks([])
+            ax.set_yticks([])
+            # 隐藏标签
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            # 去掉外圈
+            ax.spines['polar'].set_visible(False)
+            # 调整子图参数，减少边距
+            fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
+            # 自动调整子图参数，使之填充整个图形窗口
+            fig.tight_layout()
+            # 保存图像
+            if not os.path.exists("image/" + str(int(row[self.y_col]))):
+                os.mkdir("image/" + str(int(row[self.y_col])))
+            plt.savefig("image/" + str(int(row[self.y_col])) + "/" + str(photo_idx) + ".png")
+            plt.close(fig)
+            photo_idx += 1
+
+
+# 类后应该有两行空行
+# 产生一个实例/对象
+# 调用这个对象的所有功能方法（创建一个对象后，需要显式地调用对象的方法来执行特定的操作，或者也可以将调用写到init里）
+prepare_handler = DataPrepare(global_name, global_root)
+prepare_handler.column_names()
+prepare_handler.load_data()
+prepare_handler.preprocessing()
+prepare_handler.xgboost_train()
+prepare_handler.combining()
+# prepare_handler.image_encoding()
+
+
+# 数值特征提取分支
+class NumericalBranch(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(NumericalBranch, self).__init__()
+        # 第一个一维卷积层，输入通道数为1，输出通道数为hidden_size，卷积核大小为3，填充为1
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=hidden_size, kernel_size=3, padding=1)
+        # 第一个BatchNorm层，对conv1的输出进行归一化
+        self.bn1 = nn.BatchNorm1d(hidden_size)
+        # 第二个一维卷积层，输入通道数为hidden_size，输出通道数为hidden_size * 2，卷积核大小为3，填充为1
+        self.conv2 = nn.Conv1d(in_channels=hidden_size, out_channels=hidden_size * 2, kernel_size=3, padding=1)
+        # 第二个BatchNorm层，对conv2的输出进行归一化
+        self.bn2 = nn.BatchNorm1d(hidden_size * 2)
+        # 自适应平均池化层，将特征图的每个通道长度压缩为1
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        # 全连接层，将hidden_size * 2维的特征向量压缩为hidden_size维
+        self.fc = nn.Linear(hidden_size * 2, hidden_size)
+        # 对卷积层和全连接层的权重进行Xavier正态分布初始化
+        nn.init.xavier_normal_(self.conv1.weight)
+        nn.init.xavier_normal_(self.conv2.weight)
+        nn.init.xavier_normal_(self.fc.weight)
+
+    def forward(self, x):
+        # 增加一个维度，以匹配一维卷积层的输入要求
+        x = x.unsqueeze(1)
+        # 通过第一个卷积层、BatchNorm层和ReLU激活函数
+        x = F.relu(self.bn1(self.conv1(x)))
+        # 通过第二个卷积层、BatchNorm层和ReLU激活函数
+        x = F.relu(self.bn2(self.conv2(x)))
+        # 通过自适应平均池化层，并将结果压缩为一维向量
+        x = self.global_pool(x).squeeze(-1)
+        # 通过全连接层和ReLU激活函数，得到最终的数值特征表示
+        x = F.relu(self.fc(x))
+        return x
+
+
+# 修改后的ImageBranch类，增加BatchNorm和适当的权重初始化
+class ImageBranch(nn.Module):
+    def __init__(self, input_channels, hidden_size):
+        super(ImageBranch, self).__init__()
+        # 第一个卷积块
+        self.conv1 = nn.Conv2d(in_channels=input_channels, out_channels=hidden_size, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(hidden_size)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        # 第二个卷积块
+        self.conv2 = nn.Conv2d(in_channels=hidden_size, out_channels=hidden_size * 2, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(hidden_size * 2)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        # 第三个卷积块
+        self.conv3 = nn.Conv2d(in_channels=hidden_size * 2, out_channels=hidden_size * 4, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(hidden_size * 4)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        # 全局平均池化和全连接层
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(hidden_size * 4, hidden_size)
+        # 对全连接层应用Xavier初始化
+        nn.init.xavier_normal_(self.fc.weight)
+
+    def forward(self, x):
+        # 第一个卷积块
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.pool1(x)
+        # 第二个卷积块
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.pool2(x)
+        # 第三个卷积块
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = self.pool3(x)
+        # 全局池化和展平
+        x = self.global_pool(x).view(x.size(0), -1)  # 形状：（批量大小，hidden_size * 4）
+        # 全连接层
+        x = F.relu(self.fc(x))
+        return x
+
+
+# 交叉注意力机制
+class CrossAttention(nn.Module):
+    def __init__(self, feature_size):
+        super(CrossAttention, self).__init__()
+        # 计算 output_channels，确保至少为 1
+        output_channels = max(feature_size // 8, 1)
+        # 使用小的卷积核来降低计算复杂度
+        self.query_conv = nn.Conv1d(in_channels=feature_size, out_channels=output_channels, kernel_size=1)
+        self.key_conv = nn.Conv1d(in_channels=feature_size, out_channels=output_channels, kernel_size=1)
+        self.value_conv = nn.Conv1d(in_channels=feature_size, out_channels=feature_size, kernel_size=1)
+        self.softmax = nn.Softmax(dim=-1)
+        self.scale = (output_channels) ** 0.5  # 缩放因子
+
+    def forward(self, query, key, value):
+        # 计算 query, key 和 value
+        query = self.query_conv(query)  # 形状：（批量大小，output_channels，序列长度）
+        key = self.key_conv(key)
+        value = self.value_conv(value)  # 形状：（批量大小，feature_size，序列长度）
+        # 计算注意力分数矩阵
+        energy = torch.bmm(query.permute(0, 2, 1), key) / self.scale  # 形状：（批量大小，序列长度，序列长度）
+        attention = self.softmax(energy)  # 形状：（批量大小，序列长度，序列长度）
+        # 应用注意力到 value 并加入残差连接
+        out = torch.bmm(value, attention.transpose(1, 2)) + value  # 形状：（批量大小，feature_size，序列长度）
+        return out
+
+
+# 残差块
+class Residual(nn.Module):
+    def __init__(self, in_channels, out_channels, use_1x1conv=False, stride=1):
+        super(Residual, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=stride)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride) if use_1x1conv else None
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x):
+        y = F.relu(self.bn1(self.conv1(x)))
+        y = self.bn2(self.conv2(y))
+        if self.conv3:
+            x = self.conv3(x)
+        return F.relu(y + x)
+
+
+# 综合网络
+class FusionNet(nn.Module):
+    def __init__(self, numerical_input_size, image_input_channels, hidden_size, num_classes):
+        super(FusionNet, self).__init__()
+        self.numerical_branch = NumericalBranch(numerical_input_size, hidden_size)
+        self.image_branch = ImageBranch(image_input_channels, hidden_size)
+        self.cross_attention = CrossAttention(hidden_size)
+        self.residual_blocks = nn.Sequential(
+            Residual(hidden_size, hidden_size, use_1x1conv=True),
+            Residual(hidden_size, hidden_size),
+            Residual(hidden_size, hidden_size)
+        )
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, numerical_data, image_data):
+        numerical_features = self.numerical_branch(numerical_data).unsqueeze(2)
+        # print('数值特征：\n', numerical_features)
+        image_features = self.image_branch(image_data).unsqueeze(2)
+        # print('图像特征：\n', image_features)
+        combined_features = (self.cross_attention(numerical_features, image_features, image_features)
+                             + numerical_features)
+        # print('交叉特征：\n', combined_features)
+        combined_features = combined_features.view(combined_features.size(0), combined_features.size(1), 1, 1)
+        combined_features = self.residual_blocks(combined_features)
+        # print('残差特征：\n', combined_features)
+        combined_features = self.global_pool(combined_features).view(combined_features.size(0), -1)
+        output = self.fc(combined_features)
+        # probability = torch.sigmoid(output)
+        # probability = torch.softmax(output, dim=1)
+        # print('概率预测：\n', probability)
+        return output
+
+
+# 加载数值编码和图像编码并进行预处理
+# 创建数据集对象
+# 提取整理数据对象
+# 数值+标签 和 图像+标签
+class MyDataset(data.Dataset):
+    # dataset_type判断训练集、测试集和验证集
+    def __init__(self, data_prepare_instance, img_path, dataset_type):
+        # 将 DataPrepare 的所有属性赋给 MyDataset 的 self
+        self.numerical_df = None
+        for attr, value in data_prepare_instance.__dict__.items():
+            setattr(self, attr, value)
+        # self.num_df = numerical_df
+        # print(self.numerical_df)
+        self.img_path = img_path
+        self.dataset_type = dataset_type
+        # 每个图像的路径及它对应的标签
+        self.img_paths, self.img_labels = self.read_file(self.img_path)
+
+    # 定义了获取数值编码、图像编码和它对应标签的方法
+    def __getitem__(self, index):
+        # 数值
+        # 模型权重为float，输入为double，故转换为 float32
+        number = self.numerical_df[self.x_cols].iloc[index].values.astype(np.float32)
+        # 转换为张量
+        number = torch.tensor(number)
+        # 图像
+        image_path = self.img_paths[index]
+        image = Image.open(image_path)
+        # print(image)
+        # # 打印图像信息
+        # print("Image path:", image_path)
+        # print("Image mode:", image.mode)  # 打印图像模式 (例如，'RGB', 'RGBA', 等)
+        # print("Image size:", image.size)  # 打印图像尺寸 (宽, 高)
+        # 显示图像
+        # plt.figure()
+        # plt.imshow(image)
+        # plt.title("Original Image")
+        # plt.show()
+        image = self.img_transform(image)
+        # 将PyTorch张量转换为NumPy数组并打印
+        # image_array = image.numpy()
+        # print("Image tensor values:")
+        # print(image_array)
+        # 打印图像张量的形状
+        # print("Image tensor shape:", image.shape)
+        # print(image)
+        image_label = self.img_labels[index]
+        return number, image, int(image_label)
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def read_file(self, path):
+        # 从文件夹中读取数据
+        file_path_list = []
+        label_list = []
+        for root, dirs, files in os.walk(path):
+            for name in files:
+                file_path_list.append(os.path.join(root, name))
+                label_list.append(int(root[-1]))
+            # print(label_list)
+        l3 = []
+        for i in range(len(file_path_list)):
+            l3.append([file_path_list[i], label_list[i]])
+        self.shuffle(l3)
+        # 将 self.num_df 按照洗牌后的顺序重新排序
+        self.numerical_df = self.numerical_df.sample(frac=1, random_state=42).reset_index(drop=True)
+        file_path_list = []
+        label_list = []
+        for i in range(len(l3)):
+            file_path_list.append(l3[i][0])
+            label_list.append(l3[i][1])
+        # 划分训练集、验证集和测试集，7.5:1:1.5
+        if self.dataset_type == 0:
+            return file_path_list[:int(0.8 * len(file_path_list))], label_list[:int(0.8 * len(label_list))]
+        elif self.dataset_type == 1:
+            return file_path_list[int(0.8 * len(file_path_list)):int(0.9 * len(file_path_list))], label_list[int(
+                0.8 * len(file_path_list)):int(0.9 * len(label_list))]
+        else:
+            return file_path_list[int(0.9 * len(file_path_list)):], label_list[int(0.9 * len(label_list)):]
+
+    # 洗牌算法（Fisher-Yates 算法）
+    @staticmethod
+    def shuffle(data_object):
+        n = len(data_object)
+        for i in range(n - 1, 0, -1):
+            j = random.randint(0, i)
+            data_object[i], data_object[j] = data_object[j], data_object[i]
+        return data_object
+
+    # 虽然有警告，但这里不能设置静态，静态方法不能访问类的属性
+    # 已解决
+    @staticmethod
+    def img_transform(img):
+        # 图像转化为张量，图像归一化，再输入神经网络
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                # transforms.Lambda(lambda x: x / 255),
+                transforms.Normalize(mean=[0.5], std=[0.5])
+            ]
+        )
+        img = transform(img)
+        return img
+
+
+# 训练、验证和测试数据加载器，Adam优化器
+# dataset_type代表了训练0、验证1和测试2数据集类型，与文件夹的标签命名无关
+train_data = MyDataset(data_prepare_instance=prepare_handler, img_path='./imagediamonds', dataset_type=0)
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+valid_data = MyDataset(data_prepare_instance=prepare_handler, img_path='./imagediamonds', dataset_type=1)
+valid_loader = DataLoader(valid_data, batch_size=batch_size, shuffle=True)
+test_data = MyDataset(data_prepare_instance=prepare_handler, img_path='./imagediamonds', dataset_type=2)
+test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=True)
+
+
+# 特征数量，图像通道数，卷积核数量，分类数量
+net = FusionNet(global_input_size, global_input_channels, global_hidden_size, global_num_classes)
+# 参数优化器，模型所有参数的优化
+optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+# 学习率调度器，避免 verbose 参数的警告。每10个epoch，学习率将乘以 gamma=0.1
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.8)
+# 检查 GPU 内存
+if hasattr(torch.cuda, 'empty_cache'):
+    torch.cuda.empty_cache()
+
+
+def evaluate_accuracy(data_iter, net, device):
+    net.eval()
+    acc_sum, n = 0.0, 0
+    with torch.no_grad():
+        for X_num, X_img, y in data_iter:
+            X_num, X_img, y = X_num.to(device), X_img.to(device), y.to(device)
+            # print(X_num)
+            # print('标签:',y)
+            # print("X_img shape:", X_img.shape)
+            # print(X_img)
+            y_hat = net(X_num, X_img)
+            # print(y_hat)
+            # print('测试样本标签：', y)
+            # print('测试网络输出:', y_hat.argmax(dim=1))
+            acc_sum += (y_hat.argmax(dim=1) == y).sum().cpu().item()
+            n += y.shape[0]
+    net.train()
+    return acc_sum / n
+
+
+def evaluate_auc(data_iter, net, device, num_classes):
+    net.eval()
+    y_true = []
+    y_score = []
+    with torch.no_grad():
+        for X_num, X_img, y in data_iter:
+            X_num, X_img, y = X_num.to(device), X_img.to(device), y.to(device)
+            y_hat = net(X_num, X_img)
+            if num_classes == 2:
+                y_score.extend(y_hat[:, 1].cpu().numpy())  # Assuming y_hat is the probability scores for positive class
+            else:
+                y_score.extend(torch.nn.functional.softmax(y_hat, dim=1).cpu().numpy())
+            y_true.extend(y.cpu().numpy())
+    y_true = np.array(y_true)
+    # print(y_true)
+    y_score = np.array(y_score)
+    if num_classes == 2:
+        auc = roc_auc_score(y_true, y_score)
+    else:
+        auc_scores = []
+        for i in range(num_classes):
+            auc_i = roc_auc_score((y_true == i).astype(int), y_score[:, i], multi_class='ovr')
+            auc_scores.append(auc_i)
+        macro_auc = np.mean(auc_scores)
+    net.train()
+    return macro_auc if num_classes != 2 else auc
+
+
+def evaluate_f1(data_iter, net, device):
+    net.eval()
+    y_true = []
+    y_pred = []
+    y_scores = []
+    with torch.no_grad():
+        for X_num, X_img, y in data_iter:
+            X_num, X_img, y = X_num.to(device), X_img.to(device), y.to(device)
+            y_hat = net(X_num, X_img)
+            y_pred.extend(y_hat.argmax(dim=1).cpu().numpy())  # 获取预测类别
+            y_scores.extend(torch.softmax(y_hat, dim=1).cpu().numpy())  # 获取所有类别的概率
+            y_true.extend(y.cpu().numpy())  # 实际标签
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    y_scores = np.array(y_scores)
+    # 适用于多分类的 F1 分数
+    f1 = f1_score(y_true, y_pred, average='macro')  # 使用 'macro' 或 'weighted' 进行多分类的 F1 计算
+    net.train()
+    return f1
+
+
+# 特征提取
+def extract_features(model, data_loader, device):
+    model.eval()
+    features = []
+    labels = []
+    with torch.no_grad():
+        for X_num, X_img, y in data_loader:
+            X_num, X_img, y = X_num.to(device), X_img.to(device), y.to(device)
+            features.append(model(X_num, X_img).cpu().numpy())
+            labels.extend(y.cpu().numpy())
+    return np.concatenate(features), np.array(labels)
+
+
+# 特征维度图
+def plot_tsne(features, labels, num_classes, classes=None):
+    # 确保 features 是 NumPy 数组并处理数据类型
+    features = features.cpu().numpy() if isinstance(features, torch.Tensor) else features
+    labels = labels.cpu().numpy() if isinstance(labels, torch.Tensor) else labels
+    features = features.reshape(features.shape[0], -1).astype(np.float32)
+    # 检查并去除 NaN 或 inf
+    if np.isnan(features).any() or np.isinf(features).any():
+        features = np.nan_to_num(features, nan=0.0, posinf=1e6, neginf=-1e6)
+    # 标准化数据
+    features = StandardScaler().fit_transform(features)
+    # 设置适当的 perplexity 值
+    perplexity = min(30, max(5, features.shape[0] // 4))
+    # 计算 t-SNE
+    tsne = TSNE(n_components=2, random_state=0, perplexity=perplexity)
+    tsne_results = tsne.fit_transform(features)
+    # 绘制 t-SNE 图像
+    plt.figure(figsize=(10, 8))
+    if classes is None:
+        unique_labels = np.unique(labels)
+        for label in unique_labels:
+            plt.scatter(tsne_results[labels == label, 0], tsne_results[labels == label, 1], label=str(label))
+    else:
+        for class_idx, class_name in enumerate(classes):
+            class_mask = (labels == class_idx)
+            plt.scatter(tsne_results[class_mask, 0], tsne_results[class_mask, 1], label=class_name)
+    plt.legend()
+    plt.title('t-SNE Visualization')
+    plt.xlabel('t-SNE Dimension 1')
+    plt.ylabel('t-SNE Dimension 2')
+    plt.show()
+
+
+def train_model(net, train_iter, valid_iter, test_iter, optimizer, device, num_epochs, num_classes):
+    net = net.to(device)
+    print("training on", device)
+    # 对于分类问题，通常使用交叉熵损失（CrossEntropyLoss），
+    # 它期望模型输出的是logits（即未经softmax/sigmoid转换的原始分数），
+    # logits是每个类别的预测分数
+    # 然后内部应用softmax
+    loss = nn.CrossEntropyLoss()
+    # batch_count = 0
+    best_valid_acc = 0.0
+    for epoch in range(num_epochs):
+        train_l_sum, train_acc_sum, n = 0.0, 0.0, 0
+        start = time.time()
+        for X_num, X_img, y in train_iter:
+            X_num, X_img, y = X_num.to(device), X_img.to(device), y.to(device)
+            y_hat = net(X_num, X_img)
+            # print('训练网络输出：', y_hat)
+            # print('训练网络标签:', y_hat.argmax(dim=1))
+            # print('训练样本标签：', y)
+            l = loss(y_hat, y)
+            optimizer.zero_grad()
+            l.backward()
+            # 更新模型参数
+            optimizer.step()
+            # 梯度裁剪以避免梯度爆炸,L2范数正则化
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=10)
+            train_l_sum += l.cpu().item()
+            train_acc_sum += (y_hat.argmax(dim=1) == y).sum().cpu().item()
+            n += y.shape[0]
+            # batch_count += 1
+        # 按照验证集准确率调节学习率
+        # scheduler.step(valid_acc) 需要别的函数
+        # 按照训练次数调节学习率
+        scheduler.step()
+        valid_acc = evaluate_accuracy(valid_iter, net, device)
+        # valid_auc = evaluate_auc(valid_iter, net, device, num_classes)
+        train_f1 = evaluate_f1(train_iter, net, device)
+        valid_f1 = evaluate_f1(valid_iter, net, device)
+        test_f1 = evaluate_f1(test_iter, net, device)
+        print('epoch %d, loss %.4f, train acc %.4f, valid acc %.4f, '
+              'train_f1 %.4f , valid_f1 %.4f , test_f1 %.4f , time %.1f sec'
+              % (epoch, train_l_sum / n, train_acc_sum / n, valid_acc,
+                 train_f1, valid_f1, test_f1, time.time() - start))
+        if valid_acc > best_valid_acc:
+            best_valid_acc = valid_acc
+            torch.save(net.state_dict(), 'model_params.pth')
+    # 加载最优参数
+    model_params_path = 'model_params.pth'
+    if os.path.exists(model_params_path):
+        net.load_state_dict(torch.load(model_params_path))
+        print("成功加载模型参数：", model_params_path)
+    else:
+        print("模型参数文件不存在：", model_params_path)
+    # 在所有epoch完成之后，评估模型在测试集上的准确率
+    test_acc = evaluate_accuracy(test_iter, net, device)
+    test_auc = evaluate_auc(test_iter, net, device, num_classes)
+    test_f1 = evaluate_f1(test_iter, net, device)
+    print("Final test accuracy: %.4f,   Final test auc: %.4f,   Final test f1: %.4f"
+          % (test_acc, test_auc, test_f1))
+
+
+# 训练
+# print("DataFrame 的索引列表:", train_loader.dataset.numerical_df.index.tolist())
+train_model(net, train_loader, valid_loader, test_loader, optimizer, 'cuda:0', num_epochs, global_num_classes)
